@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import { createEmptyDocument, type DocumentModel, type NodeId } from './model';
 import { loadDocument, saveDocument } from './storage';
 import { collapseAll, deleteSubtree, duplicateSubtree, expandAll, expandToDepth, getAncestors, getParentId, getVisibleNodes, indentNode, insertSibling, moveSibling, moveTo, outdentNode, setCollapsed, updateNodeText, type DropPosition } from './tree';
+import { getFilteredVisibleNodes, type OutlineFilter } from './filter';
+import { renderNode } from './render';
 
 type SaveState = '読み込み中' | '保存中' | '保存済み' | '保存エラー';
 type Snapshot = { past: DocumentModel[]; present: DocumentModel; future: DocumentModel[] };
@@ -15,25 +17,35 @@ export default function App() {
   const document = history.present;
   const [status, setStatus] = useState<SaveState>('読み込み中');
   const [zoomId, setZoomId] = useState<NodeId>(() => history.present.rootId);
-  const [activeId, setActiveId] = useState<NodeId | null>(null);
+  const [editingId, setEditingId] = useState<NodeId | null>(null);
+  const [searchText, setSearchText] = useState('');
+  const [filter, setFilter] = useState<OutlineFilter | null>(null);
   const [depth, setDepth] = useState('2');
   const [dragId, setDragId] = useState<NodeId | null>(null);
   const [dropHint, setDropHint] = useState<{ id: NodeId; position: DropPosition } | null>(null);
   const inputRefs = useRef(new Map<NodeId, HTMLTextAreaElement>());
-  const visible = useMemo(() => getVisibleNodes(document, zoomId), [document, zoomId]);
+  const visible = useMemo(() => filter
+    ? getFilteredVisibleNodes(document, zoomId, filter, editingId)
+    : getVisibleNodes(document, zoomId), [document, zoomId, filter, editingId]);
 
   const commit = (next: DocumentModel) => {
     if (next === document) return;
     setHistory((current) => ({ past: [...current.past, copySnapshot(current.present)].slice(-100), present: next, future: [] }));
   };
   const focusNode = (id: NodeId | null, atEnd = false) => {
-    setActiveId(id);
+    setEditingId(id);
     if (id) requestAnimationFrame(() => {
       const element = inputRefs.current.get(id);
       element?.focus();
       if (atEnd && element) element.setSelectionRange(element.value.length, element.value.length);
     });
   };
+  const clearFilter = () => { setSearchText(''); setFilter(null); };
+  const updateSearch = (value: string) => {
+    setSearchText(value);
+    setFilter(value.trim() ? { kind: 'search', value } : null);
+  };
+  const activateTag = (tag: string) => { setSearchText(''); setFilter({ kind: 'tag', value: tag }); };
 
   useEffect(() => {
     let active = true;
@@ -63,7 +75,7 @@ export default function App() {
     return { past: [...current.past, copySnapshot(current.present)].slice(-100), present: current.future[0], future: current.future.slice(1) };
   });
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>, id: NodeId) => {
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>, id: NodeId) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     const node = document.nodes[id];
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
@@ -122,6 +134,10 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark">N</span><span>Nestline</span></div>
+        <div className="search-box">
+          <input aria-label="ノードを検索" type="search" placeholder="検索…" value={searchText} onChange={(event) => updateSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); clearFilter(); } }} />
+          {filter && <button className="clear-filter" aria-label="フィルタを解除" title="フィルタを解除 (Esc)" onClick={clearFilter}>×</button>}
+        </div>
         <div className="save-status" aria-live="polite"><span className={`status-dot ${status === '保存エラー' ? 'error' : ''}`} />{status}</div>
       </header>
       <nav className="toolbar" aria-label="アウトライン操作">
@@ -131,6 +147,7 @@ export default function App() {
             <button className="crumb" onClick={() => setZoomId(id)} title="この階層に戻る">{id === document.rootId ? 'すべて' : document.nodes[id]?.text || '無題'}</button>
           </span>)}
         </div>
+        {filter && <div className="active-filter" role="status">{filter.kind === 'tag' ? `タグ: #${filter.value}` : `検索: ${filter.value}`} <button aria-label="フィルタを解除" onClick={clearFilter}>×</button></div>}
         <div className="toolbar-actions">
           <button onClick={undo} disabled={!history.past.length} title="Ctrl+Z">元に戻す</button>
           <button onClick={redo} disabled={!history.future.length} title="Ctrl+Shift+Z">やり直す</button>
@@ -141,7 +158,7 @@ export default function App() {
         </div>
       </nav>
       <section className="outline" aria-label="アウトライン" onDragOver={(e) => e.preventDefault()}>
-        {visible.length === 0 && <div className="empty-state"><span className="empty-bullet">•</span><span>ここから考えを組み立てます</span></div>}
+        {visible.length === 0 && <div className="empty-state"><span className="empty-bullet">•</span><span>{filter ? '一致するノードがありません' : 'ここから考えを組み立てます'}</span></div>}
         {visible.map(({ id, depth: level }) => {
           const node = document.nodes[id];
           const hasChildren = node.children.length > 0;
@@ -150,7 +167,18 @@ export default function App() {
             onDrop={(e) => handleDrop(e, id, dropHint?.id === id ? dropHint.position : 'child')}>
             <div className="row-content">
               <button className={`bullet-toggle ${hasChildren ? '' : 'leaf'}`} aria-label={hasChildren ? (node.collapsed ? '展開' : '折りたたむ') : 'ノード'} title={hasChildren ? '展開 / 折りたたみ' : ''} onClick={() => hasChildren && commit(setCollapsed(document, id, !node.collapsed))}>{hasChildren ? (node.collapsed ? '▸' : '▾') : '•'}</button>
-              <textarea ref={(element) => { if (element) inputRefs.current.set(id, element); else inputRefs.current.delete(id); }} rows={Math.max(1, node.text.split('\n').length)} value={node.text} aria-label="ノード本文" onFocus={() => setActiveId(id)} onChange={(e) => commit(updateNodeText(document, id, e.target.value))} onKeyDown={(e) => handleKeyDown(e, id)} onDragOver={(e) => e.preventDefault()} />
+              {editingId === id
+                ? <textarea ref={(element) => { if (element) inputRefs.current.set(id, element); else inputRefs.current.delete(id); }} rows={Math.max(1, node.text.split('\n').length)} value={node.text} aria-label="ノード本文" onFocus={() => setEditingId(id)} onBlur={() => setEditingId((current) => current === id ? null : current)} onChange={(e) => commit(updateNodeText(document, id, e.target.value))} onKeyDown={(e) => handleKeyDown(e, id)} onDragOver={(e) => e.preventDefault()} />
+                : <div className="node-rendered" role="textbox" aria-readonly="true" tabIndex={0} onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === 'F2') { event.preventDefault(); focusNode(id); return; }
+                  handleKeyDown(event, id);
+                }} onClick={(event) => {
+                  const target = event.target as HTMLElement;
+                  const tag = target.closest<HTMLElement>('[data-tag]')?.dataset.tag;
+                  if (tag) { event.stopPropagation(); activateTag(tag); return; }
+                  if (target.closest('a')) return;
+                  focusNode(id);
+                }} dangerouslySetInnerHTML={{ __html: renderNode(node.text) }} />}
               <div className="row-actions">
                 <button draggable title="ドラッグして移動" aria-label="ノードをドラッグして移動" className="drag-handle" onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); setDragId(id); }} onDragEnd={() => { setDragId(null); setDropHint(null); }}>⠿</button>
                 <button title="この部分木にズーム" aria-label="ズーム" onClick={() => setZoomId(id)}>↗</button>

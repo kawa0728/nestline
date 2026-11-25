@@ -4,9 +4,12 @@ import { loadDocument, saveDocument } from './storage';
 import { collapseAll, deleteSubtree, duplicateSubtree, expandAll, expandToDepth, getAncestors, getParentId, getVisibleNodes, indentNode, insertSibling, moveSibling, moveTo, outdentNode, setCollapsed, updateNodeText, type DropPosition } from './tree';
 import { getFilteredVisibleNodes, type OutlineFilter } from './filter';
 import { renderNode } from './render';
+import { appendImportedDocument, exportJson, exportLatex, exportMarkdown, exportOpml, importJson, importMarkdown, importOpml, type LatexFormat } from './io';
 
 type SaveState = '読み込み中' | '保存中' | '保存済み' | '保存エラー';
 type Snapshot = { past: DocumentModel[]; present: DocumentModel; future: DocumentModel[] };
+type ImportFormat = 'markdown' | 'opml' | 'json';
+type PendingImport = { document: DocumentModel; fileName: string };
 
 function copySnapshot(doc: DocumentModel): DocumentModel {
   return { ...doc, nodes: Object.fromEntries(Object.entries(doc.nodes).map(([id, node]) => [id, { ...node, children: [...node.children] }])) };
@@ -24,6 +27,11 @@ export default function App() {
   const [dragId, setDragId] = useState<NodeId | null>(null);
   const [dropHint, setDropHint] = useState<{ id: NodeId; position: DropPosition } | null>(null);
   const inputRefs = useRef(new Map<NodeId, HTMLTextAreaElement>());
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const ioMenuRef = useRef<HTMLDetailsElement>(null);
+  const [importFormat, setImportFormat] = useState<ImportFormat>('markdown');
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const visible = useMemo(() => filter
     ? getFilteredVisibleNodes(document, zoomId, filter, editingId)
     : getVisibleNodes(document, zoomId), [document, zoomId, filter, editingId]);
@@ -46,6 +54,60 @@ export default function App() {
     setFilter(value.trim() ? { kind: 'search', value } : null);
   };
   const activateTag = (tag: string) => { setSearchText(''); setFilter({ kind: 'tag', value: tag }); };
+  const beginImport = (format: ImportFormat) => {
+    setImportFormat(format);
+    setPendingImport(null);
+    setImportError(null);
+    ioMenuRef.current?.removeAttribute('open');
+    if (fileInputRef.current) { fileInputRef.current.value = ''; fileInputRef.current.click(); }
+  };
+  const readImportFile = async (file: File) => {
+    try {
+      const source = await file.text();
+      const imported = importFormat === 'markdown' ? importMarkdown(source) : importFormat === 'opml' ? importOpml(source) : importJson(source);
+      setPendingImport({ document: imported, fileName: file.name });
+      setImportError(null);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'ファイルを読み込めませんでした。');
+      setPendingImport(null);
+    }
+  };
+  const applyImport = (mode: 'replace' | 'append') => {
+    if (!pendingImport) return;
+    if (mode === 'replace') {
+      const accepted = window.confirm(`「${pendingImport.fileName}」を読み込み、現在の文書を置き換えます。続けますか？`);
+      if (!accepted) return;
+      commit(pendingImport.document);
+      setZoomId(pendingImport.document.rootId);
+    } else {
+      commit(appendImportedDocument(document, pendingImport.document));
+    }
+    setEditingId(null);
+    clearFilter();
+    setPendingImport(null);
+    setImportError(null);
+  };
+  const download = (fileName: string, content: string, mimeType: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type: `${mimeType};charset=utf-8` }));
+    const anchor = window.document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const exportFile = (format: 'markdown' | 'opml' | 'json' | 'latex', scope: 'all' | 'zoom', latexFormat: LatexFormat = 'layer') => {
+    const selectedRoot = scope === 'zoom' ? zoomId : document.rootId;
+    const suffix = scope === 'zoom' && zoomId !== document.rootId ? '-zoom' : '';
+    if (format === 'markdown') download(`nestline${suffix}.md`, exportMarkdown(document, selectedRoot), 'text/markdown');
+    if (format === 'opml') download(`nestline${suffix}.opml`, exportOpml(document, selectedRoot), 'text/xml');
+    if (format === 'json') download(`nestline${suffix}.json`, exportJson(document, selectedRoot), 'application/json');
+    if (format === 'latex') {
+      const result = exportLatex(document, latexFormat, selectedRoot);
+      if (result.exceededDepth) window.alert('itemize の4階層を超える項目があります。5階層目以降は左インデント付き段落として出力します。');
+      download(`nestline${suffix}-${latexFormat}.tex`, result.text, 'application/x-tex');
+    }
+    ioMenuRef.current?.removeAttribute('open');
+  };
 
   useEffect(() => {
     let active = true;
@@ -65,6 +127,10 @@ export default function App() {
     const timer = window.setTimeout(() => saveDocument(document).then(() => setStatus('保存済み')).catch(() => setStatus('保存エラー')), 250);
     return () => window.clearTimeout(timer);
   }, [document]);
+
+  useEffect(() => {
+    if (!document.nodes[zoomId]) setZoomId(document.rootId);
+  }, [document, zoomId]);
 
   const undo = () => setHistory((current) => {
     if (!current.past.length) return current;
@@ -138,6 +204,24 @@ export default function App() {
           <input aria-label="ノードを検索" type="search" placeholder="検索…" value={searchText} onChange={(event) => updateSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); clearFilter(); } }} />
           {filter && <button className="clear-filter" aria-label="フィルタを解除" title="フィルタを解除 (Esc)" onClick={clearFilter}>×</button>}
         </div>
+        <details className="io-menu" ref={ioMenuRef}>
+          <summary>入出力</summary>
+          <div className="io-dropdown">
+            <div className="io-heading">Markdown</div>
+            <div className="io-row"><button onClick={() => exportFile('markdown', 'all')}>全体を書き出す</button><button disabled={zoomId === document.rootId} onClick={() => exportFile('markdown', 'zoom')}>ズーム部分木</button></div>
+            <div className="io-heading">OPML</div>
+            <div className="io-row"><button onClick={() => exportFile('opml', 'all')}>全体を書き出す</button><button disabled={zoomId === document.rootId} onClick={() => exportFile('opml', 'zoom')}>ズーム部分木</button></div>
+            <div className="io-heading">JSON</div>
+            <div className="io-row"><button onClick={() => exportFile('json', 'all')}>全体を書き出す</button><button disabled={zoomId === document.rootId} onClick={() => exportFile('json', 'zoom')}>ズーム部分木</button></div>
+            <div className="io-heading">LaTeX · layer</div>
+            <div className="io-row"><button onClick={() => exportFile('latex', 'all', 'layer')}>全体を書き出す</button><button disabled={zoomId === document.rootId} onClick={() => exportFile('latex', 'zoom', 'layer')}>ズーム部分木</button></div>
+            <div className="io-heading">LaTeX · itemize</div>
+            <div className="io-row"><button onClick={() => exportFile('latex', 'all', 'itemize')}>全体を書き出す</button><button disabled={zoomId === document.rootId} onClick={() => exportFile('latex', 'zoom', 'itemize')}>ズーム部分木</button></div>
+            <div className="io-heading">インポート</div>
+            <div className="io-row"><button onClick={() => beginImport('markdown')}>Markdown…</button><button onClick={() => beginImport('opml')}>OPML…</button><button onClick={() => beginImport('json')}>JSON…</button></div>
+          </div>
+        </details>
+        <input ref={fileInputRef} className="file-input-hidden" type="file" accept={importFormat === 'markdown' ? '.md,.markdown,.txt,text/markdown,text/plain' : importFormat === 'opml' ? '.opml,.xml,text/xml,application/xml' : '.json,application/json'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void readImportFile(file); }} />
         <div className="save-status" aria-live="polite"><span className={`status-dot ${status === '保存エラー' ? 'error' : ''}`} />{status}</div>
       </header>
       <nav className="toolbar" aria-label="アウトライン操作">
@@ -192,6 +276,23 @@ export default function App() {
         <button className="add-root" onClick={() => { const parent = currentRoot ?? document.nodes[document.rootId]; const node = { id: crypto.randomUUID(), text: '', note: '', collapsed: false, children: [] as NodeId[] }; const next = { ...document, nodes: { ...document.nodes, [node.id]: node, [parent.id]: { ...parent, children: [...parent.children, node.id] } } }; commit(next); focusNode(node.id); }}>＋ ノードを追加</button>
       </section>
       <footer className="helpbar">Enter 追加 · Tab / Shift+Tab 階層変更 · Shift+Enter 改行 · Ctrl+↑↓ 並べ替え · Ctrl+Shift+Space 折りたたみ · Alt+→ ズーム · Alt+← ズーム解除</footer>
+      {(pendingImport || importError) && <div className="modal-backdrop" role="presentation">
+        <section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+          <h2 id="import-title">{pendingImport ? 'インポート方法を選択' : 'インポートできません'}</h2>
+          {pendingImport ? <>
+            <p><strong>{pendingImport.fileName}</strong> の内容をどう取り込みますか？</p>
+            <p className="import-note">置き換えを選ぶと、現在の文書全体がファイルの内容に置き換わります。</p>
+            <div className="modal-actions">
+              <button className="primary-action" autoFocus onClick={() => applyImport('replace')}>置き換える…</button>
+              <button onClick={() => applyImport('append')}>新規ノードとして追加</button>
+              <button onClick={() => setPendingImport(null)}>キャンセル</button>
+            </div>
+          </> : <>
+            <p>{importError}</p>
+            <div className="modal-actions"><button className="primary-action" onClick={() => setImportError(null)}>閉じる</button></div>
+          </>}
+        </section>
+      </div>}
     </main>
   );
 }

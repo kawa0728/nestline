@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyDocument } from './model';
-import { decideSync, unwrapEnvelope, wrapDocument } from './sync';
+import { decideSync, hashDocument, unwrapEnvelope, wrapDocument } from './sync';
 
 const t1 = '2026-11-26T00:00:00.000Z';
 const t2 = '2026-11-26T01:00:00.000Z';
@@ -38,8 +38,23 @@ describe('decideSync', () => {
     expect(decideSync(t2, t3, t1)).toBe('conflict');
     expect(decideSync(t3, t2, t1)).toBe('conflict');
   });
+  it('never overwrites remote when local content is unchanged since the last sync', () => {
+    expect(decideSync(t3, t2, t1, false)).toBe('use-remote');
+    expect(decideSync(t3, t1, t1, false)).toBe('in-sync');
+    expect(decideSync(t3, null, null, false)).toBe('in-sync');
+  });
   it('without a sync baseline, the newer timestamp wins', () => {
     expect(decideSync(t1, t2, null)).toBe('use-remote');
     expect(decideSync(t2, t1, null)).toBe('use-local');
+  });
+});
+
+describe('hashDocument', () => {
+  it('is stable for identical content and changes with content', () => {
+    const a = createEmptyDocument();
+    const b = JSON.parse(JSON.stringify(a)) as typeof a;
+    expect(hashDocument(a)).toBe(hashDocument(b));
+    const c = { ...a, nodes: { ...a.nodes, [a.rootId]: { ...a.nodes[a.rootId], text: 'x' } } };
+    expect(hashDocument(c)).not.toBe(hashDocument(a));
   });
 });

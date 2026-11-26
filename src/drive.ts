@@ -15,7 +15,7 @@ const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const API_BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 
-interface TokenResponse { access_token?: string; error?: string }
+interface TokenResponse { access_token?: string; expires_in?: number; error?: string }
 interface TokenClient {
   requestAccessToken: (overrides?: { prompt?: string }) => void;
 }
@@ -51,19 +51,23 @@ function loadGis(): Promise<GisOAuth2> {
   return gisPromise;
 }
 
-export async function requestAccessToken(interactive: boolean): Promise<string> {
+export interface AccessToken { token: string; expiresAt: number }
+
+export async function requestAccessToken(prompt: '' | 'consent' | 'select_account' = ''): Promise<AccessToken> {
   const oauth2 = await loadGis();
   return new Promise((resolve, reject) => {
     const client = oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: DRIVE_SCOPE,
       callback: (response) => {
-        if (response.access_token) resolve(response.access_token);
-        else reject(new Error(response.error ?? 'アクセストークンを取得できませんでした'));
+        if (response.access_token) {
+          const seconds = typeof response.expires_in === 'number' ? response.expires_in : 3600;
+          resolve({ token: response.access_token, expiresAt: Date.now() + seconds * 1000 });
+        } else reject(new Error(response.error ?? 'アクセストークンを取得できませんでした'));
       },
       error_callback: () => reject(new Error('Google 認証がキャンセルされました')),
     });
-    client.requestAccessToken({ prompt: interactive ? 'consent' : '' });
+    client.requestAccessToken({ prompt });
   });
 }
 

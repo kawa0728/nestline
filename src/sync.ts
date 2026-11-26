@@ -34,7 +34,13 @@ export function decideSync(
   localUpdatedAt: string | null,
   remoteUpdatedAt: string | null,
   lastSyncedAt: string | null,
+  localDirty: boolean = true,
 ): SyncDecision {
+  if (!localDirty) {
+    // Local content is identical to the last synced content: never overwrite remote.
+    if (!remoteUpdatedAt || remoteUpdatedAt === lastSyncedAt) return 'in-sync';
+    return 'use-remote';
+  }
   if (!remoteUpdatedAt) return localUpdatedAt ? 'use-local' : 'in-sync';
   if (!localUpdatedAt) return 'use-remote';
   if (localUpdatedAt === remoteUpdatedAt) return 'in-sync';
@@ -52,4 +58,14 @@ export function decideSync(
 export function isEmptyDocument(document: DocumentModel): boolean {
   const root = document.nodes[document.rootId];
   return !root || root.children.length === 0;
+}
+
+/** Stable-enough content hash (djb2 over the JSON form) to detect real local changes. */
+export function hashDocument(document: DocumentModel): string {
+  const text = JSON.stringify(document);
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36) + ':' + text.length;
 }

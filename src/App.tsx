@@ -5,6 +5,7 @@ import { collapseAll, deleteSubtree, duplicateSubtree, expandAll, expandToDepth,
 import { getFilteredVisibleNodes, type OutlineFilter } from './filter';
 import { renderNode } from './render';
 import { appendImportedDocument, exportJson, exportLatex, exportMarkdown, exportOpml, importJson, importMarkdown, importOpml, type LatexFormat } from './io';
+import DriveSync from './DriveSync';
 
 type SaveState = '読み込み中' | '保存中' | '保存済み' | '保存エラー';
 type Snapshot = { past: DocumentModel[]; present: DocumentModel; future: DocumentModel[] };
@@ -99,6 +100,10 @@ export default function App() {
   const commit = (next: DocumentModel) => {
     if (next === document) return;
     setHistory((current) => ({ past: [...current.past, copySnapshot(current.present)].slice(-100), present: next, future: [] }));
+  };
+  const replaceDocument = (next: DocumentModel) => {
+    setHistory({ past: [], present: next, future: [] });
+    setZoomId(next.rootId);
   };
   const focusNode = (id: NodeId | null, atEnd = false) => {
     setEditingId(id);
@@ -306,6 +311,7 @@ export default function App() {
         <div className="save-status" aria-live="polite">{status === '保存エラー'
           ? <button className="save-error-action" onClick={() => exportFile('json', 'all')} title="現在の文書をJSONでバックアップ">保存エラー · JSONバックアップを保存</button>
           : <><span className="status-dot" />{status}</>}</div>
+        <DriveSync document={document} onRemoteDocument={replaceDocument} />
       </header>
       <nav className="toolbar" aria-label="アウトライン操作">
         <div className="breadcrumbs">

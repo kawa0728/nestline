@@ -95,3 +95,21 @@ button { color: inherit; }
 .modal-actions .primary-action { border-color: #353734; background: #353734; color: #fff; }
 .modal-actions .primary-action:hover { background: #4b4d48; }
 @media (max-width: 850px) { .topbar { flex-wrap: wrap; padding: 10px 16px; gap: 10px; } .search-box { flex: 1 1 50%; width: auto; } .save-status { margin-left: auto; } .io-dropdown { right: -40px; } .toolbar { align-items: flex-start; flex-direction: column; gap: 6px; } .toolbar-actions { flex-wrap: wrap; } .outline { margin-top: 32px; padding: 0 16px; } .row-actions { opacity: 1; } .helpbar { justify-content: space-between; padding: 8px; font-size: 9px; } .shortcut-list { grid-template-columns: 1fr; } .shortcut-list dd { padding-top: 0; } }
+
+/* --- Drive sync (phase 5) --- */
+.drive-sync { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.drive-sync button { min-height: 32px; }
+.drive-state { font-size: 12px; color: #555; }
+.drive-settings { display: flex; align-items: center; gap: 6px; flex-basis: 100%; }
+.drive-settings input { min-width: 260px; }
+.drive-message { flex-basis: 100%; font-size: 12px; color: #7a4d00; }
+
+/* --- Mobile (phase 5) --- */
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; row-gap: 6px; }
+  .search-box { order: 3; flex-basis: 100%; }
+  .search-box input { width: 100%; min-height: 40px; }
+  .topbar button, .toolbar button { min-height: 40px; padding: 6px 10px; }
+  .bullet-toggle { min-width: 36px; min-height: 36px; }
+  .drive-settings input { min-width: 0; flex: 1; }
+}

@@ -153,7 +153,7 @@ export function expandAll(doc: DocumentModel): DocumentModel {
 }
 
 export function collapseAll(doc: DocumentModel): DocumentModel {
-  const next = copyDoc(doc); Object.values(next.nodes).forEach((node) => { if (node.children.length) node.collapsed = true; }); return next;
+  const next = copyDoc(doc); Object.values(next.nodes).forEach((node) => { if (node.id !== doc.rootId && node.children.length) node.collapsed = true; }); return next;
 }
 
 export function expandToDepth(doc: DocumentModel, depth: number): DocumentModel {

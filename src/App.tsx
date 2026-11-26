@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
 import { createEmptyDocument, type DocumentModel, type NodeId } from './model';
 import { loadDocument, saveDocument } from './storage';
 import { collapseAll, deleteSubtree, duplicateSubtree, expandAll, expandToDepth, getAncestors, getParentId, getVisibleNodes, indentNode, insertSibling, moveSibling, moveTo, outdentNode, setCollapsed, updateNodeText, type DropPosition } from './tree';
@@ -27,14 +27,74 @@ export default function App() {
   const [dragId, setDragId] = useState<NodeId | null>(null);
   const [dropHint, setDropHint] = useState<{ id: NodeId; position: DropPosition } | null>(null);
   const inputRefs = useRef(new Map<NodeId, HTMLTextAreaElement>());
+  const outlineRef = useRef<HTMLElement>(null);
+  const rowRefs = useRef(new Map<NodeId, HTMLDivElement>());
+  const measuredHeights = useRef(new Map<NodeId, number>());
+  const searchRef = useRef<HTMLInputElement>(null);
+  const saveSequenceRef = useRef(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(720);
+  const [measureVersion, setMeasureVersion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ioMenuRef = useRef<HTMLDetailsElement>(null);
   const [importFormat, setImportFormat] = useState<ImportFormat>('markdown');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const visible = useMemo(() => filter
     ? getFilteredVisibleNodes(document, zoomId, filter, editingId)
     : getVisibleNodes(document, zoomId), [document, zoomId, filter, editingId]);
+  const virtualized = visible.length > 500;
+  const virtualLayout = useMemo(() => {
+    const offsets = [0];
+    let total = 0;
+    for (const { id } of visible) {
+      const node = document.nodes[id];
+      const lineEstimate = Math.max(node.text.split('\n').length, Math.ceil(node.text.length / 95));
+      total += measuredHeights.current.get(id) ?? Math.max(36, lineEstimate * 36);
+      offsets.push(total);
+    }
+    return { offsets, total };
+  }, [visible, document, measureVersion]);
+  let virtualStart = 0;
+  let virtualEnd = visible.length;
+  if (virtualized) {
+    const bottom = scrollTop + viewportHeight;
+    while (virtualStart < visible.length && virtualLayout.offsets[virtualStart + 1] <= scrollTop) virtualStart++;
+    virtualEnd = virtualStart;
+    while (virtualEnd < visible.length && virtualLayout.offsets[virtualEnd] < bottom) virtualEnd++;
+    virtualStart = Math.max(0, virtualStart - 12);
+    virtualEnd = Math.min(visible.length, virtualEnd + 12);
+  }
+  const renderedRows = virtualized ? visible.slice(virtualStart, virtualEnd) : visible;
+  useLayoutEffect(() => {
+    if (!virtualized) return;
+    const element = outlineRef.current;
+    if (element) setViewportHeight(element.clientHeight || window.innerHeight);
+    let changed = false;
+    for (const { id } of renderedRows) {
+      const row = rowRefs.current.get(id);
+      if (!row) continue;
+      const height = row.offsetHeight + 2;
+      if (Math.abs((measuredHeights.current.get(id) ?? 0) - height) > 1) {
+        measuredHeights.current.set(id, height);
+        changed = true;
+      }
+    }
+    if (changed) setMeasureVersion((value) => value + 1);
+  }, [virtualized, renderedRows, editingId]);
+  useEffect(() => {
+    if (!virtualized) return;
+    const element = outlineRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setViewportHeight(element.clientHeight || window.innerHeight));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [virtualized]);
+  useEffect(() => {
+    if (outlineRef.current) outlineRef.current.scrollTop = 0;
+    setScrollTop(0);
+  }, [zoomId, filter]);
 
   const commit = (next: DocumentModel) => {
     if (next === document) return;
@@ -123,10 +183,31 @@ export default function App() {
 
   useEffect(() => {
     if (status === '読み込み中') return;
+    const sequence = ++saveSequenceRef.current;
     setStatus('保存中');
-    const timer = window.setTimeout(() => saveDocument(document).then(() => setStatus('保存済み')).catch(() => setStatus('保存エラー')), 250);
+    const timer = window.setTimeout(() => saveDocument(document)
+      .then(() => { if (sequence === saveSequenceRef.current) setStatus('保存済み'); })
+      .catch(() => { if (sequence === saveSequenceRef.current) setStatus('保存エラー'); }), 250);
     return () => window.clearTimeout(timer);
   }, [document]);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      const target = event.target as HTMLElement | null;
+      const typing = !!target?.closest('input, textarea, [contenteditable="true"]');
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return;
+      }
+      if (event.key === 'Escape') {
+        if (helpOpen) { setHelpOpen(false); return; }
+        if (filter) { clearFilter(); return; }
+      }
+      if (event.key === '?' && !typing) { event.preventDefault(); setHelpOpen((open) => !open); }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [helpOpen, filter]);
 
   useEffect(() => {
     if (!document.nodes[zoomId]) setZoomId(document.rootId);
@@ -201,7 +282,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand"><span className="brand-mark">N</span><span>Nestline</span></div>
         <div className="search-box">
-          <input aria-label="ノードを検索" type="search" placeholder="検索…" value={searchText} onChange={(event) => updateSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); clearFilter(); } }} />
+          <input ref={searchRef} aria-label="ノードを検索" type="search" placeholder="検索…" value={searchText} onChange={(event) => updateSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); clearFilter(); } }} />
           {filter && <button className="clear-filter" aria-label="フィルタを解除" title="フィルタを解除 (Esc)" onClick={clearFilter}>×</button>}
         </div>
         <details className="io-menu" ref={ioMenuRef}>
@@ -222,7 +303,9 @@ export default function App() {
           </div>
         </details>
         <input ref={fileInputRef} className="file-input-hidden" type="file" accept={importFormat === 'markdown' ? '.md,.markdown,.txt,text/markdown,text/plain' : importFormat === 'opml' ? '.opml,.xml,text/xml,application/xml' : '.json,application/json'} onChange={(event) => { const file = event.target.files?.[0]; if (file) void readImportFile(file); }} />
-        <div className="save-status" aria-live="polite"><span className={`status-dot ${status === '保存エラー' ? 'error' : ''}`} />{status}</div>
+        <div className="save-status" aria-live="polite">{status === '保存エラー'
+          ? <button className="save-error-action" onClick={() => exportFile('json', 'all')} title="現在の文書をJSONでバックアップ">保存エラー · JSONバックアップを保存</button>
+          : <><span className="status-dot" />{status}</>}</div>
       </header>
       <nav className="toolbar" aria-label="アウトライン操作">
         <div className="breadcrumbs">
@@ -241,12 +324,13 @@ export default function App() {
           <label className="depth-control">深さ <input aria-label="展開する深さ" type="number" min="0" max="99" value={depth} onChange={(e) => setDepth(e.target.value)} /><button onClick={() => commit(expandToDepth(document, Math.max(0, Number(depth) || 0)))}>適用</button></label>
         </div>
       </nav>
-      <section className="outline" aria-label="アウトライン" onDragOver={(e) => e.preventDefault()}>
+      <section ref={outlineRef} className={`outline ${virtualized ? 'virtualized' : ''}`} aria-label="アウトライン" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} onDragOver={(e) => e.preventDefault()}>
         {visible.length === 0 && <div className="empty-state"><span className="empty-bullet">•</span><span>{filter ? '一致するノードがありません' : 'ここから考えを組み立てます'}</span></div>}
-        {visible.map(({ id, depth: level }) => {
+        {virtualized && <div aria-hidden="true" style={{ height: virtualLayout.offsets[virtualStart] }} />}
+        {renderedRows.map(({ id, depth: level }) => {
           const node = document.nodes[id];
           const hasChildren = node.children.length > 0;
-          return <div className={`outline-row ${dropHint?.id === id ? `drop-${dropHint.position}` : ''} ${dragId === id ? 'dragging' : ''}`} key={id} style={{ marginLeft: `${level * 24}px` }}
+          return <div ref={(element) => { if (element) rowRefs.current.set(id, element); else rowRefs.current.delete(id); }} data-node-id={id} className={`outline-row ${dropHint?.id === id ? `drop-${dropHint.position}` : ''} ${dragId === id ? 'dragging' : ''}`} key={id} style={{ marginLeft: `${level * 24}px` }}
             onDragOver={(e) => { e.preventDefault(); const rect = e.currentTarget.getBoundingClientRect(); const ratio = (e.clientY - rect.top) / rect.height; const position: DropPosition = ratio < .25 ? 'before' : ratio > .75 ? 'after' : 'child'; setDropHint({ id, position }); }}
             onDrop={(e) => handleDrop(e, id, dropHint?.id === id ? dropHint.position : 'child')}>
             <div className="row-content">
@@ -270,12 +354,34 @@ export default function App() {
                 <button title="ノードと子を削除" aria-label="ノードと子を削除" onClick={() => { const index = visible.findIndex((item) => item.id === id); const result = deleteSubtree(document, id); commit(result.document); focusNode(visible[index - 1]?.id ?? result.previousId, true); }}>×</button>
               </div>
             </div>
-            {hasChildren && !node.collapsed && node.children.map((childId) => <div key={`drop-before-${childId}`} className="drop-target before" onDragOver={(e) => { e.preventDefault(); setDropHint({ id: childId, position: 'before' }); }} onDrop={(e) => handleDrop(e, childId, 'before')} />)}
           </div>;
         })}
+        {virtualized && <div aria-hidden="true" style={{ height: Math.max(0, virtualLayout.total - virtualLayout.offsets[virtualEnd]) }} />}
         <button className="add-root" onClick={() => { const parent = currentRoot ?? document.nodes[document.rootId]; const node = { id: crypto.randomUUID(), text: '', note: '', collapsed: false, children: [] as NodeId[] }; const next = { ...document, nodes: { ...document.nodes, [node.id]: node, [parent.id]: { ...parent, children: [...parent.children, node.id] } } }; commit(next); focusNode(node.id); }}>＋ ノードを追加</button>
       </section>
-      <footer className="helpbar">Enter 追加 · Tab / Shift+Tab 階層変更 · Shift+Enter 改行 · Ctrl+↑↓ 並べ替え · Ctrl+Shift+Space 折りたたみ · Alt+→ ズーム · Alt+← ズーム解除</footer>
+      <footer className="helpbar"><span>Enter 追加 · Tab / Shift+Tab 階層変更 · Shift+Enter 改行 · Ctrl+↑↓ 並べ替え · Ctrl+Shift+Space 折りたたみ · Alt+→ ズーム · Alt+← ズーム解除</span><button onClick={() => setHelpOpen(true)}>ショートカット (?)</button></footer>
+      {helpOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setHelpOpen(false); }}>
+        <section className="import-modal shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title">
+          <h2 id="shortcut-title">キーボードショートカット</h2>
+          <dl className="shortcut-list">
+            <dt>Enter</dt><dd>同じ階層に兄弟ノードを追加。空ノードでは逆インデント</dd>
+            <dt>Shift+Enter</dt><dd>ノード内で改行</dd>
+            <dt>Tab / Shift+Tab</dt><dd>インデント / 逆インデント</dd>
+            <dt>空ノードで Backspace</dt><dd>ノードと子を削除し、前の可視ノードへ移動</dd>
+            <dt>↑ / ↓</dt><dd>可視ノード間を移動</dd>
+            <dt>Ctrl+↑ / ↓ または Alt+↑ / ↓</dt><dd>ノードを子ごと並べ替え</dd>
+            <dt>Ctrl+Shift+Space</dt><dd>選択ノードを折りたたみ / 展開</dd>
+            <dt>Alt+→ / Alt+←</dt><dd>選択ノードへズーム / 親階層へ戻る</dd>
+            <dt>Ctrl+Z</dt><dd>Undo</dd>
+            <dt>Ctrl+Shift+Z または Ctrl+Y</dt><dd>Redo</dd>
+            <dt>Ctrl+F</dt><dd>検索欄へ移動</dd>
+            <dt>Esc</dt><dd>検索 / タグフィルタを解除</dd>
+            <dt>Enter または F2</dt><dd>フォーカス中の表示ノードを編集</dd>
+            <dt>?</dt><dd>このヘルプを開閉</dd>
+          </dl>
+          <div className="modal-actions"><button className="primary-action" autoFocus onClick={() => setHelpOpen(false)}>閉じる</button></div>
+        </section>
+      </div>}
       {(pendingImport || importError) && <div className="modal-backdrop" role="presentation">
         <section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
           <h2 id="import-title">{pendingImport ? 'インポート方法を選択' : 'インポートできません'}</h2>

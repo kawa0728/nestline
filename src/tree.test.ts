@@ -60,8 +60,11 @@ describe('visible outline projection', () => {
 
   it('expands, collapses, and expands only to the requested depth', () => {
     const doc = fixture();
-    expect(collapseAll(doc).nodes.a.collapsed).toBe(true);
-    expect(expandAll(collapseAll(doc)).nodes.a.collapsed).toBe(false);
+    const collapsed = collapseAll(doc);
+    expect(collapsed.nodes.a.collapsed).toBe(true);
+    expect(collapsed.nodes.root.collapsed).toBe(false);
+    expect(getVisibleNodes(collapsed).map((item) => item.id)).toEqual(['a', 'b', 'c']);
+    expect(expandAll(collapsed).nodes.a.collapsed).toBe(false);
     const shallow = expandToDepth(doc, 0);
     expect(shallow.nodes.a.collapsed).toBe(true);
     expect(shallow.nodes.root.collapsed).toBe(false);
